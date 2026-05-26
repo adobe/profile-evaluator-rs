@@ -1,0 +1,8 @@
+/target
+src-tauri/target/*
+ui/pkg/*
+
+# Cursor rules
+.cursor/rules/manifest.json
+.cursor/rules/security-global/*
+.cursor/rules/security-lang/*
