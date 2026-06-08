@@ -11,35 +11,42 @@ governing permissions and limitations under the License.
 */
 
 #[cfg(not(target_arch = "wasm32"))]
-fn main() {
-    use std::fs;
+mod cli {
     use std::path::PathBuf;
 
     use clap::{Parser, ValueEnum};
-    use profile_evaluator_rs::{OutputFormat, evaluate_files, serialize_report};
-
-    #[derive(Debug, Parser)]
-    #[command(name = "profile-evaluator")]
-    #[command(about = "Evaluate an asset profile (YAML) against indicators JSON")]
-    struct Cli {
-        #[arg(short, long)]
-        profile: PathBuf,
-
-        #[arg(short, long)]
-        indicators: PathBuf,
-
-        #[arg(short, long, value_enum, default_value_t = FormatArg::Json)]
-        format: FormatArg,
-
-        #[arg(short, long)]
-        output: Option<PathBuf>,
-    }
 
     #[derive(Debug, Clone, Copy, ValueEnum)]
-    enum FormatArg {
+    pub enum FormatArg {
         Json,
         Yaml,
     }
+
+    #[derive(Debug, Parser)]
+    #[command(name = "profile-evaluator")]
+    #[command(about = "Evaluate an asset rubric or profile (YAML) against indicators JSON (e.g. crJSON)")]
+    pub struct Cli {
+        #[arg(short = 'p', long, alias = "rubric", short_alias = 'r')]
+        pub profile: PathBuf,
+
+        #[arg(short = 'i', long, alias = "crjson", short_alias = 'j')]
+        pub indicators: PathBuf,
+
+        #[arg(short, long, value_enum, default_value_t = FormatArg::Json)]
+        pub format: FormatArg,
+
+        #[arg(short, long)]
+        pub output: Option<PathBuf>,
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn main() {
+    use std::fs;
+
+    use clap::Parser;
+    use cli::{Cli, FormatArg};
+    use profile_evaluator_rs::{OutputFormat, evaluate_files, serialize_report};
 
     let cli = Cli::parse();
 
