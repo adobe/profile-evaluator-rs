@@ -72,7 +72,14 @@ struct StatementEntry {
     description: Option<Value>,
     title: Option<Value>,
     expression: Option<String>,
+    #[serde(alias = "reportText")]
     report_text: Value,
+    /// When true the expression is expected to return the list of *failing* items;
+    /// an empty array / null result means the check passed (value → `true`),
+    /// a non-empty result means it failed (value → `false`).
+    /// The raw result is injected into the template context as `matches`.
+    #[serde(alias = "failIfMatched", default)]
+    fail_if_matched: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -209,7 +216,8 @@ fn parse_section(doc: Value) -> Result<Vec<ProfileItem>, EvaluatorError> {
 pub fn evaluate(profile: &CompiledProfile, indicators: &Value) -> Result<Value, EvaluatorError> {
     let language = profile
         .info
-        .get("profile_metadata")
+        .get("rubric_metadata")
+        .or_else(|| profile.info.get("profile_metadata"))
         .and_then(|v| v.get("language"))
         .and_then(Value::as_str)
         .unwrap_or("en")
@@ -298,6 +306,26 @@ pub fn evaluate(profile: &CompiledProfile, indicators: &Value) -> Result<Value, 
                         None => (None, vec![]),
                     };
 
+                    // For `failIfMatched` statements the expression returns the list of failing
+                    // items.  An empty array / null means the check passed (→ `true`); a
+                    // non-empty array means it failed (→ `false`).  The raw result is saved so
+                    // it can be injected into templates as `{{matches}}`.
+                    let (expr_result, matches_raw) = if statement.fail_if_matched {
+                        match expr_result {
+                            Some(Ok(raw)) => {
+                                let passed = match &raw {
+                                    Value::Null => true,
+                                    Value::Array(arr) => arr.is_empty(),
+                                    _ => false,
+                                };
+                                (Some(Ok(Value::Bool(passed))), Some(raw))
+                            }
+                            other => (other, None),
+                        }
+                    } else {
+                        (expr_result, None)
+                    };
+
                     let expr_value: Option<Value> = match expr_result {
                         Some(Ok(ref value)) => {
                             out.insert("value".to_string(), value.clone());
@@ -336,6 +364,14 @@ pub fn evaluate(profile: &CompiledProfile, indicators: &Value) -> Result<Value, 
                         None => None,
                     };
 
+                    // Inject `matches` into the template context while rendering this
+                    // statement's report text, then remove it so it doesn't leak.
+                    if let Some(ref raw) = matches_raw {
+                        if let Some(obj) = state.context.as_object_mut() {
+                            obj.insert("matches".to_string(), raw.clone());
+                        }
+                    }
+
                     let include_report_text = statement.expression.is_none()
                         || (expr_value.is_some() && statement.report_text.is_object());
                     if include_report_text {
@@ -347,6 +383,12 @@ pub fn evaluate(profile: &CompiledProfile, indicators: &Value) -> Result<Value, 
                         let rendered_text = state.render_value(&report_text_source);
                         if let Some(s) = rendered_text.as_str() {
                             out.insert("report_text".to_string(), Value::String(s.to_string()));
+                        }
+                    }
+
+                    if matches_raw.is_some() {
+                        if let Some(obj) = state.context.as_object_mut() {
+                            obj.remove("matches");
                         }
                     }
 
