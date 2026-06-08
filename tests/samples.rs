@@ -268,3 +268,83 @@ profile_metadata:
         "expected 'value' for valid expression, got: {stmt}"
     );
 }
+
+// ── CLI alias tests ───────────────────────────────────────────────────────────
+
+// These tests mirror the `Cli` struct from src/main.rs.  Integration tests
+// cannot import from a binary crate's modules, so we duplicate the struct here.
+// The `format` field uses `String` instead of `FormatArg` (a `ValueEnum`) for
+// simplicity — the alias behaviour being tested is independent of that field's type.
+// Keep this struct's `profile` and `indicators` attributes in sync with src/main.rs.
+mod cli_alias_tests {
+    use clap::Parser;
+
+    #[derive(Debug, Parser)]
+    #[command(name = "profile-evaluator")]
+    struct Cli {
+        #[arg(short = 'p', long, alias = "rubric", short_alias = 'r')]
+        profile: std::path::PathBuf,
+        #[arg(short = 'i', long, alias = "crjson", short_alias = 'j')]
+        indicators: std::path::PathBuf,
+        #[arg(short, long, default_value = "json")]
+        format: String,
+        #[arg(short, long)]
+        output: Option<std::path::PathBuf>,
+    }
+
+    #[test]
+    fn rubric_long_alias_accepted() {
+        let parsed = Cli::try_parse_from([
+            "profile-evaluator",
+            "--rubric", "profile.yml",
+            "--indicators", "ind.json",
+        ])
+        .expect("--rubric alias should be accepted");
+        assert_eq!(parsed.profile, std::path::PathBuf::from("profile.yml"));
+    }
+
+    #[test]
+    fn rubric_short_alias_accepted() {
+        let parsed = Cli::try_parse_from([
+            "profile-evaluator",
+            "-r", "profile.yml",
+            "-i", "ind.json",
+        ])
+        .expect("-r short alias should be accepted");
+        assert_eq!(parsed.profile, std::path::PathBuf::from("profile.yml"));
+    }
+
+    #[test]
+    fn crjson_long_alias_accepted() {
+        let parsed = Cli::try_parse_from([
+            "profile-evaluator",
+            "--profile", "profile.yml",
+            "--crjson", "ind.json",
+        ])
+        .expect("--crjson alias should be accepted");
+        assert_eq!(parsed.indicators, std::path::PathBuf::from("ind.json"));
+    }
+
+    #[test]
+    fn crjson_short_alias_accepted() {
+        let parsed = Cli::try_parse_from([
+            "profile-evaluator",
+            "-p", "profile.yml",
+            "-j", "ind.json",
+        ])
+        .expect("-j short alias should be accepted");
+        assert_eq!(parsed.indicators, std::path::PathBuf::from("ind.json"));
+    }
+
+    #[test]
+    fn original_flags_still_work() {
+        let parsed = Cli::try_parse_from([
+            "profile-evaluator",
+            "--profile", "p.yml",
+            "--indicators", "i.json",
+        ])
+        .expect("original --profile/--indicators should still be accepted");
+        assert_eq!(parsed.profile, std::path::PathBuf::from("p.yml"));
+        assert_eq!(parsed.indicators, std::path::PathBuf::from("i.json"));
+    }
+}
