@@ -1,6 +1,6 @@
 # profile-evaluator-rs
 
-Evaluate an asset profile (YAML) against indicators (JSON). Produces a report by running profile expressions and template text over the indicator data.
+Evaluate an asset rubric or trust profile (YAML) against trust indicators such as crJSON. Produces a report by running the provided expressions and template text over the indicator data.
 
 ## Building
 
