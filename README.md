@@ -41,14 +41,16 @@ Notes:
 
 ```bash
 profile-evaluator --profile <PROFILE> --indicators <INDICATORS> [OPTIONS]
+# or using rubric/crJSON aliases:
+profile-evaluator --rubric <RUBRIC> --crjson <CRJSON> [OPTIONS]
 ```
 
-| Option | Short | Description |
-|--------|--------|-------------|
-| `--profile` | `-p` | Path to the asset profile YAML file |
-| `--indicators` | `-i` | Path to the indicators JSON file |
-| `--format` | `-f` | Output format: `json` (default) or `yaml` |
-| `--output` | `-o` | Write report to this file (default: stdout) |
+| Option | Short | Alias | Short Alias | Description |
+|--------|-------|-------|-------------|-------------|
+| `--profile` | `-p` | `--rubric` | `-r` | Path to the asset profile or rubric YAML file |
+| `--indicators` | `-i` | `--crjson` | `-j` | Path to the indicators JSON file (e.g. crJSON) |
+| `--format` | `-f` | | | Output format: `json` (default) or `yaml` |
+| `--output` | `-o` | | | Write report to this file (default: stdout) |
 
 ### Examples
 
@@ -58,6 +60,10 @@ profile-evaluator -p profile.yml -i indicators.json
 
 # YAML report to a file
 profile-evaluator -p profile.yml -i indicators.json -f yaml -o report.yml
+
+# Using rubric/crJSON aliases (equivalent)
+profile-evaluator -r rubric.yml -j asset.crjson
+profile-evaluator --rubric rubric.yml --crjson asset.crjson -f yaml -o report.yml
 ```
 
 ## Development
