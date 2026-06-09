@@ -257,7 +257,7 @@ pub fn evaluate(profile: &CompiledProfile, indicators: &Value) -> Result<Value, 
     };
 
     for (name, body) in &state.expressions {
-        state.jf.register_expression(name, body).map_err(|e| {
+        state.jf.register_expression_with_params(name, body).map_err(|e| {
             EvaluatorError::InvalidProfile(format!("invalid expression \"{}\": {}", name, e))
         })?;
     }
