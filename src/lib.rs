@@ -80,6 +80,13 @@ struct StatementEntry {
     /// The raw result is injected into the template context as `matches`.
     #[serde(alias = "failIfMatched", default)]
     fail_if_matched: bool,
+    /// When true the expression is expected to return the list of *warning* items;
+    /// an empty array / null result means the check passed, a non-empty result
+    /// means it warned. The statement's value is the list of matches (empty when
+    /// nothing matched), and the report text is taken from the `warn` key.
+    /// The raw result is injected into the template context as `matches`.
+    #[serde(alias = "warnIfMatched", default)]
+    warn_if_matched: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -306,36 +313,48 @@ pub fn evaluate(profile: &CompiledProfile, indicators: &Value) -> Result<Value, 
                         None => (None, vec![]),
                     };
 
-                    // For `failIfMatched` statements the expression returns the list of failing
-                    // items.  An empty array / null means the check passed (→ `true`); a
-                    // non-empty array means it failed (→ `false`).  The raw result is saved so
-                    // it can be injected into templates as `{{matches}}`.
-                    let (expr_result, matches_raw) = if statement.fail_if_matched {
-                        match expr_result {
-                            Some(Ok(raw)) => {
-                                let passed = match &raw {
-                                    Value::Null => true,
-                                    Value::Array(arr) => arr.is_empty(),
-                                    _ => false,
-                                };
-                                (Some(Ok(Value::Bool(passed))), Some(raw))
-                            }
-                            other => (other, None),
+                    let (expr_result, matches_raw) = match expr_result {
+                        Some(Ok(raw)) if statement.fail_if_matched || statement.warn_if_matched => {
+                            let matches = match raw {
+                                Value::Null => Vec::new(),
+                                Value::Array(items) => items,
+                                scalar => vec![scalar],
+                            };
+
+                            let status = if matches.is_empty() {
+                                Value::Bool(true)
+                            } else if statement.fail_if_matched {
+                                Value::Bool(false)
+                            } else {
+                                Value::String("warn".to_string())
+                            };
+
+                            (Some(Ok(status)), Some(Value::Array(matches)))
                         }
-                    } else {
-                        (expr_result, None)
+                        other => (other, None),
                     };
 
                     let expr_value: Option<Value> = match expr_result {
-                        Some(Ok(ref value)) => {
-                            out.insert("value".to_string(), value.clone());
+                        Some(Ok(ref status)) => {
+                            let reported = if statement.warn_if_matched && !statement.fail_if_matched
+                            {
+                                matches_raw
+                                    .clone()
+                                    .unwrap_or_else(|| Value::Array(Vec::new()))
+                            } else {
+                                status.clone()
+                            };
+
+                            out.insert("value".to_string(), reported.clone());
+
                             if let Some(profile_obj) = state
                                 .context
                                 .get_mut("profile")
                                 .and_then(Value::as_object_mut)
                             {
-                                profile_obj.insert(statement.id.clone(), value.clone());
+                                profile_obj.insert(statement.id.clone(), reported);
                             }
+
                             if !expr_debug.is_empty() {
                                 out.insert(
                                     "debug".to_string(),
@@ -344,7 +363,8 @@ pub fn evaluate(profile: &CompiledProfile, indicators: &Value) -> Result<Value, 
                                     ),
                                 );
                             }
-                            Some(value.clone())
+
+                            Some(status.clone())
                         }
                         Some(Err(ref err_info)) => {
                             let mut err_obj = err_info.clone();
@@ -364,12 +384,14 @@ pub fn evaluate(profile: &CompiledProfile, indicators: &Value) -> Result<Value, 
                         None => None,
                     };
 
-                    // Inject `matches` into the template context while rendering this
-                    // statement's report text, then remove it so it doesn't leak.
-                    if let Some(ref raw) = matches_raw {
-                        if let Some(obj) = state.context.as_object_mut() {
-                            obj.insert("matches".to_string(), raw.clone());
-                        }
+                    if let Some(ref matches) = matches_raw
+                        && let Some(obj) = state.context.as_object_mut()
+                    {
+                        obj.insert(
+                            "matches".to_string(),
+                            Value::String(format_matches(matches)),
+                        );
+                        obj.insert("matches_items".to_string(), matches.clone());
                     }
 
                     let include_report_text = statement.expression.is_none()
@@ -386,10 +408,11 @@ pub fn evaluate(profile: &CompiledProfile, indicators: &Value) -> Result<Value, 
                         }
                     }
 
-                    if matches_raw.is_some() {
-                        if let Some(obj) = state.context.as_object_mut() {
-                            obj.remove("matches");
-                        }
+                    if matches_raw.is_some()
+                        && let Some(obj) = state.context.as_object_mut()
+                    {
+                        obj.remove("matches");
+                        obj.remove("matches_items");
                     }
 
                     section_entries.push(Value::Object(out));
@@ -663,26 +686,39 @@ impl EvalState {
     }
 }
 
-fn select_text_value(value: &Value, expr_value: Option<&Value>, language: &str) -> Value {
-    if let Some(obj) = value.as_object() {
-        if let Some(selected) = expr_value {
-            let key = match selected {
-                Value::Bool(b) => b.to_string(),
-                Value::String(s) => s.clone(),
-                Value::Number(n) => n.to_string(),
-                Value::Null => "null".to_string(),
-                _ => json_to_inline_string(selected),
-            };
+fn report_text_keys(value: &Value) -> Vec<String> {
+    let primary = match value {
+        Value::Bool(b) => b.to_string(),
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Null => "null".to_string(),
+        other => json_to_inline_string(other),
+    };
 
+    let mut keys = Vec::with_capacity(3);
+    let is_warn = primary == "warn";
+    keys.push(primary);
+    if is_warn {
+        keys.push("false".to_string());
+    }
+    keys.push("default".to_string());
+    keys
+}
+
+fn select_text_value(value: &Value, expr_value: Option<&Value>, language: &str) -> Value {
+    let Some(obj) = value.as_object() else {
+        return value.clone();
+    };
+
+    if let Some(selected) = expr_value {
+        for key in report_text_keys(selected) {
             if let Some(found) = obj.get(&key) {
                 return select_language(found, language);
             }
         }
-
-        return select_language(value, language);
     }
 
-    value.clone()
+    select_language(value, language)
 }
 
 fn select_language(value: &Value, language: &str) -> Value {
@@ -712,6 +748,21 @@ fn json_formula_error_to_json(e: &JsonFormulaError) -> serde_json::Value {
         "kind": format!("{:?}", e.kind),
         "message": e.message,
     })
+}
+
+fn format_matches(matches: &Value) -> String {
+    let items: &[Value] = match matches {
+        Value::Array(items) => items,
+        other => std::slice::from_ref(other),
+    };
+
+    let rendered = items
+        .iter()
+        .map(|item| serde_json::to_string(item).unwrap_or_else(|_| "null".to_string()))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    format!("[{rendered}]")
 }
 
 fn json_to_inline_string(value: &Value) -> String {

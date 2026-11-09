@@ -66,6 +66,42 @@ profile-evaluator -r rubric.yml -j asset.crjson
 profile-evaluator --rubric rubric.yml --crjson asset.crjson -f yaml -o report.yml
 ```
 
+## Match-list statements
+
+A statement whose expression returns the list of offending items can be declared with one of two flags instead
+of returning a boolean. `null` and an empty array both mean "nothing matched".
+
+| Flag | Nothing matched | Matched |
+|---|---|---|
+| `failIfMatched: true` | `value: true` | `value: false` |
+| `warnIfMatched: true` | `value: []` | `value: [<matched items>]` |
+
+Report text is selected by the match state, not by the reported value: `true` when nothing matched, `false` for
+a `failIfMatched` match, `warn` for a `warnIfMatched` match. A `warn` state falls back to the `false` text when
+no `warn` key exists, and any state falls back to a `default` key.
+
+Inside a match-list statement's report text:
+
+- `{{matches}}` — the matched items as a JSON-style array, e.g. `["c2pa.edited", "c2pa.opened"]`; `[]` when
+  nothing matched
+- `{{matches_items}}` — the raw list, for `{{#each matches_items}}` blocks
+
+Both are scoped to the statement they belong to. Because a `warnIfMatched` statement's value is a list, a
+dependent expression reading `profile.<id>` sees an empty (falsy) list when there is nothing to warn about —
+use `length(@.profile.<id>)` rather than bare truthiness.
+
+```yaml
+- id: legacy_action_parameters
+  warnIfMatched: true
+  expression: |
+    manifests[0].assertions.'c2pa.actions.v2'.actions[?parameters.legacyField != null].action
+  reportText:
+    'true':
+      en: No actions use the deprecated parameter field
+    warn:
+      en: 'Actions using the deprecated parameter field: {{matches}}'
+```
+
 ## Development
 
 Run tests (expects `testfiles/` and `output/` with sample profiles and expected reports):

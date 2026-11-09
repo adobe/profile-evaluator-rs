@@ -348,3 +348,423 @@ mod cli_alias_tests {
         assert_eq!(parsed.indicators, std::path::PathBuf::from("i.json"));
     }
 }
+
+mod warn_if_matched_tests {
+    use profile_evaluator_rs::evaluate_texts;
+    use serde_json::{Value, json};
+
+    const INDICATORS: &str = r#"{"bad": ["c2pa.edited", "c2pa.opened"], "good": []}"#;
+
+    fn statements(report: &Value) -> &Vec<Value> {
+        report["statements"][0]
+            .as_array()
+            .expect("expected a statements section")
+    }
+
+    #[test]
+    fn warn_match_value_is_the_match_list() {
+        let profile = r#"
+---
+profile_metadata:
+  language: en
+---
+- id: warned
+  warnIfMatched: true
+  expression: 'bad[]'
+  reportText:
+    'true':
+      en: clean
+    warn:
+      en: 'discouraged: {{matches}}'
+"#;
+        let report = evaluate_texts(profile, INDICATORS, None).expect("evaluation must succeed");
+        let stmt = &statements(&report)[0];
+
+        assert_eq!(stmt["value"], json!(["c2pa.edited", "c2pa.opened"]));
+        assert_eq!(
+            stmt["report_text"],
+            json!(r#"discouraged: ["c2pa.edited", "c2pa.opened"]"#),
+            "matches must render as a JSON-style array, not handlebars' unquoted form"
+        );
+    }
+
+    #[test]
+    fn warn_match_falls_back_to_false_text_without_warn_key() {
+        let profile = r#"
+---
+profile_metadata:
+  language: en
+---
+- id: warned
+  warnIfMatched: true
+  expression: 'bad[]'
+  reportText:
+    'true':
+      en: clean
+    'false':
+      en: 'discouraged: {{matches}}'
+"#;
+        let report = evaluate_texts(profile, INDICATORS, None).expect("evaluation must succeed");
+        let stmt = &statements(&report)[0];
+
+        assert_eq!(stmt["value"], json!(["c2pa.edited", "c2pa.opened"]));
+        assert_eq!(
+            stmt["report_text"],
+            json!(r#"discouraged: ["c2pa.edited", "c2pa.opened"]"#)
+        );
+    }
+
+    #[test]
+    fn warn_without_match_reports_empty_list_and_true_text() {
+        let profile = r#"
+---
+profile_metadata:
+  language: en
+---
+- id: warned
+  warnIfMatched: true
+  expression: 'good[]'
+  reportText:
+    'true':
+      en: 'clean (matches={{matches}})'
+    warn:
+      en: 'discouraged: {{matches}}'
+"#;
+        let report = evaluate_texts(profile, INDICATORS, None).expect("evaluation must succeed");
+        let stmt = &statements(&report)[0];
+
+        assert_eq!(stmt["value"], json!([]));
+        assert_eq!(
+            stmt["report_text"],
+            json!("clean (matches=[])"),
+            "an empty match list must interpolate as [], not as a missing-key marker"
+        );
+    }
+
+    #[test]
+    fn warn_with_null_result_reports_empty_list() {
+        let profile = r#"
+---
+profile_metadata:
+  language: en
+---
+- id: warned
+  warnIfMatched: true
+  expression: missing_field
+  reportText:
+    'true':
+      en: clean
+    warn:
+      en: 'discouraged: {{matches}}'
+"#;
+        let report = evaluate_texts(profile, INDICATORS, None).expect("evaluation must succeed");
+        let stmt = &statements(&report)[0];
+
+        assert_eq!(stmt["value"], json!([]));
+        assert_eq!(stmt["report_text"], json!("clean"));
+    }
+
+    #[test]
+    fn fail_match_keeps_boolean_value_and_interpolates_matches() {
+        let profile = r#"
+---
+profile_metadata:
+  language: en
+---
+- id: failed
+  failIfMatched: true
+  expression: 'bad[]'
+  reportText:
+    'true':
+      en: clean
+    'false':
+      en: 'failing: {{matches}}'
+"#;
+        let report = evaluate_texts(profile, INDICATORS, None).expect("evaluation must succeed");
+        let stmt = &statements(&report)[0];
+
+        assert_eq!(stmt["value"], json!(false));
+        assert_eq!(
+            stmt["report_text"],
+            json!(r#"failing: ["c2pa.edited", "c2pa.opened"]"#)
+        );
+    }
+
+    #[test]
+    fn fail_without_match_keeps_true_value() {
+        let profile = r#"
+---
+profile_metadata:
+  language: en
+---
+- id: failed
+  failIfMatched: true
+  expression: 'good[]'
+  reportText:
+    'true':
+      en: clean
+    'false':
+      en: 'failing: {{matches}}'
+"#;
+        let report = evaluate_texts(profile, INDICATORS, None).expect("evaluation must succeed");
+        let stmt = &statements(&report)[0];
+
+        assert_eq!(stmt["value"], json!(true));
+        assert_eq!(stmt["report_text"], json!("clean"));
+    }
+
+    #[test]
+    fn matches_items_supports_each_blocks() {
+        let profile = r#"
+---
+profile_metadata:
+  language: en
+---
+- id: warned
+  warnIfMatched: true
+  expression: 'bad[]'
+  reportText:
+    'true':
+      en: clean
+    warn:
+      en: '{{#each matches_items}}[{{this}}]{{/each}}'
+"#;
+        let report = evaluate_texts(profile, INDICATORS, None).expect("evaluation must succeed");
+        let stmt = &statements(&report)[0];
+
+        assert_eq!(stmt["report_text"], json!("[c2pa.edited][c2pa.opened]"));
+    }
+
+    #[test]
+    fn matches_does_not_leak_into_later_statements() {
+        let profile = r#"
+---
+profile_metadata:
+  language: en
+---
+- id: warned
+  warnIfMatched: true
+  expression: 'bad[]'
+  reportText:
+    'true':
+      en: clean
+    warn:
+      en: 'discouraged: {{matches}}'
+- id: later
+  report_text: 'leaked? {{matches}}'
+"#;
+        let report = evaluate_texts(profile, INDICATORS, None).expect("evaluation must succeed");
+        let later = &statements(&report)[1];
+
+        let text = later["report_text"].as_str().expect("report_text string");
+        assert!(
+            text.contains("🔴 Missing: matches()"),
+            "matches must be removed after the owning statement, got: {text}"
+        );
+    }
+
+    #[test]
+    fn match_list_is_visible_to_dependent_expressions() {
+        let profile = r#"
+---
+profile_metadata:
+  language: en
+---
+- id: warned
+  warnIfMatched: true
+  expression: 'bad[]'
+  reportText:
+    'true':
+      en: clean
+    warn:
+      en: warned
+- id: dependent
+  expression: 'length(@.profile.warned)'
+  reportText:
+    '0':
+      en: no warnings
+    '2':
+      en: two warnings
+"#;
+        let report = evaluate_texts(profile, INDICATORS, None).expect("evaluation must succeed");
+        let dependent = &statements(&report)[1];
+
+        assert_eq!(
+            dependent["value"],
+            json!(2),
+            "profile.<id> must carry the same match list the report shows"
+        );
+        assert_eq!(dependent["report_text"], json!("two warnings"));
+    }
+
+    #[test]
+    fn default_report_text_key_is_used_when_status_key_absent() {
+        let profile = r#"
+---
+profile_metadata:
+  language: en
+---
+- id: warned
+  warnIfMatched: true
+  expression: 'bad[]'
+  reportText:
+    'true':
+      en: clean
+    default:
+      en: 'fallback: {{matches}}'
+"#;
+        let report = evaluate_texts(profile, INDICATORS, None).expect("evaluation must succeed");
+        let stmt = &statements(&report)[0];
+
+        assert_eq!(
+            stmt["report_text"],
+            json!(r#"fallback: ["c2pa.edited", "c2pa.opened"]"#)
+        );
+    }
+
+    #[test]
+    fn bare_field_expression_matches_like_a_projection() {
+        let profile = r#"
+---
+profile_metadata:
+  language: en
+---
+- id: warned
+  warnIfMatched: true
+  expression: 'bad'
+  reportText:
+    'true':
+      en: clean
+    warn:
+      en: 'discouraged: {{matches}}'
+"#;
+        let report = evaluate_texts(profile, INDICATORS, None).expect("evaluation must succeed");
+        let stmt = &statements(&report)[0];
+
+        assert_eq!(stmt["value"], json!(["c2pa.edited", "c2pa.opened"]));
+        assert_eq!(
+            stmt["report_text"],
+            json!(r#"discouraged: ["c2pa.edited", "c2pa.opened"]"#)
+        );
+    }
+
+    #[test]
+    fn bare_field_and_flatten_agree_for_flat_arrays() {
+        let profile = r#"
+---
+profile_metadata:
+  language: en
+---
+- id: bare
+  warnIfMatched: true
+  expression: 'bad'
+  reportText:
+    'true':
+      en: clean
+    warn:
+      en: '{{matches}}'
+- id: projected
+  warnIfMatched: true
+  expression: 'bad[]'
+  reportText:
+    'true':
+      en: clean
+    warn:
+      en: '{{matches}}'
+"#;
+        let report = evaluate_texts(profile, INDICATORS, None).expect("evaluation must succeed");
+        let items = statements(&report);
+
+        assert_eq!(items[0]["value"], items[1]["value"]);
+        assert_eq!(items[0]["report_text"], items[1]["report_text"]);
+    }
+
+    #[test]
+    fn bare_field_and_flatten_diverge_on_nested_and_scalar() {
+        let profile = r#"
+---
+profile_metadata:
+  language: en
+---
+- id: nested_flattened
+  warnIfMatched: true
+  expression: 'nested[]'
+  reportText:
+    'true':
+      en: clean
+    warn:
+      en: '{{matches}}'
+- id: nested_bare
+  warnIfMatched: true
+  expression: 'nested'
+  reportText:
+    'true':
+      en: clean
+    warn:
+      en: '{{matches}}'
+- id: scalar_flattened
+  warnIfMatched: true
+  expression: 'scalar[]'
+  reportText:
+    'true':
+      en: clean
+    warn:
+      en: '{{matches}}'
+- id: scalar_bare
+  warnIfMatched: true
+  expression: 'scalar'
+  reportText:
+    'true':
+      en: clean
+    warn:
+      en: '{{matches}}'
+"#;
+        let indicators = r#"{"nested": [[0, 1], [1, 2], 3], "scalar": 42}"#;
+        let report = evaluate_texts(profile, indicators, None).expect("evaluation must succeed");
+        let items = statements(&report);
+
+        assert_eq!(
+            items[0]["value"],
+            json!([0, 1, 1, 2, 3]),
+            "flatten collapses one level"
+        );
+        assert_eq!(
+            items[1]["value"],
+            json!([[0, 1], [1, 2], 3]),
+            "a bare field is returned verbatim"
+        );
+        assert_eq!(
+            items[2]["value"],
+            json!([]),
+            "flatten on a scalar yields null, so nothing matched"
+        );
+        assert_eq!(
+            items[3]["value"],
+            json!([42]),
+            "a bare scalar is wrapped into a one-item match list"
+        );
+    }
+
+    #[test]
+    fn empty_array_field_warns_clean() {
+        let profile = r#"
+---
+profile_metadata:
+  language: en
+---
+- id: warned
+  warnIfMatched: true
+  expression: 'good'
+  reportText:
+    'true':
+      en: clean
+    warn:
+      en: 'discouraged: {{matches}}'
+"#;
+        let report = evaluate_texts(profile, INDICATORS, None).expect("evaluation must succeed");
+        let stmt = &statements(&report)[0];
+
+        assert_eq!(stmt["value"], json!([]));
+        assert_eq!(stmt["report_text"], json!("clean"));
+    }
+}
